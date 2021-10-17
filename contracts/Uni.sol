@@ -32,7 +32,7 @@ contract Uni {
     mapping (address => mapping (address => uint96)) internal allowances;
 
     /// @notice Official record of token balances for each account
-    mapping (address => uint96) internal balances;
+    // mapping (address => uint96) internal balances;
 
     /// @notice A record of each accounts delegate
     mapping (address => address) public delegates;
@@ -41,13 +41,14 @@ contract Uni {
     struct Checkpoint {
         uint32 fromBlock;
         uint96 votes;
+        uint96 balance;
     }
 
     /// @notice A record of votes checkpoints for each account, by index
-    mapping (address => mapping (uint32 => Checkpoint)) public checkpoints;
+    mapping(address => Checkpoint[]) public checkpoints;
 
     /// @notice The number of checkpoints for each account
-    mapping (address => uint32) public numCheckpoints;
+    // mapping (address => uint32) public numCheckpoints;
 
     /// @notice The EIP-712 typehash for the contract's domain
     bytes32 public constant DOMAIN_TYPEHASH = keccak256("EIP712Domain(string name,uint256 chainId,address verifyingContract)");
@@ -85,7 +86,7 @@ contract Uni {
     constructor(address account, address minter_, uint mintingAllowedAfter_) public {
         require(mintingAllowedAfter_ >= block.timestamp, "Uni::constructor: minting can only begin after deployment");
 
-        balances[account] = uint96(totalSupply);
+        checkpoints[account].push(Checkpoint({fromBlock: uint32(block.timestamp), votes: uint96(totalSupply), balance: uint96(totalSupply)}));
         emit Transfer(address(0), account, totalSupply);
         minter = minter_;
         emit MinterChanged(address(0), minter);
@@ -121,7 +122,8 @@ contract Uni {
         totalSupply = safe96(SafeMath.add(totalSupply, amount), "Uni::mint: totalSupply exceeds 96 bits");
 
         // transfer the amount to the recipient
-        balances[dst] = add96(balances[dst], amount, "Uni::mint: transfer amount overflows");
+        // balances[dst] = add96(balances[dst], amount, "Uni::mint: transfer amount overflows");
+        // _writeCheckpoint(delegatee, nCheckpoints, oldVotes, newVotes);
         emit Transfer(address(0), dst, amount);
 
         // move delegates
@@ -191,14 +193,6 @@ contract Uni {
         emit Approval(owner, spender, amount);
     }
 
-    /**
-     * @notice Get the number of tokens held by the `account`
-     * @param account The address of the account to get the balance of
-     * @return The number of tokens held
-     */
-    function balanceOf(address account) external view returns (uint) {
-        return balances[account];
-    }
 
     /**
      * @notice Transfer `amount` tokens from `msg.sender` to `dst`
@@ -269,7 +263,7 @@ contract Uni {
      * @return The number of current votes for `account`
      */
     function getCurrentVotes(address account) external view returns (uint96) {
-        uint32 nCheckpoints = numCheckpoints[account];
+        uint256 nCheckpoints = checkpoints[account].length;
         return nCheckpoints > 0 ? checkpoints[account][nCheckpoints - 1].votes : 0;
     }
 
@@ -283,7 +277,7 @@ contract Uni {
     function getPriorVotes(address account, uint blockNumber) public view returns (uint96) {
         require(blockNumber < block.number, "Uni::getPriorVotes: not yet determined");
 
-        uint32 nCheckpoints = numCheckpoints[account];
+        uint256 nCheckpoints = checkpoints[account].length;
         if (nCheckpoints == 0) {
             return 0;
         }
@@ -298,10 +292,10 @@ contract Uni {
             return 0;
         }
 
-        uint32 lower = 0;
-        uint32 upper = nCheckpoints - 1;
+        uint256 lower = 0;
+        uint256 upper = nCheckpoints - 1;
         while (upper > lower) {
-            uint32 center = upper - (upper - lower) / 2; // ceil, avoiding overflow
+            uint256 center = upper - (upper - lower) / 2; // ceil, avoiding overflow
             Checkpoint memory cp = checkpoints[account][center];
             if (cp.fromBlock == blockNumber) {
                 return cp.votes;
@@ -314,23 +308,38 @@ contract Uni {
         return checkpoints[account][lower].votes;
     }
 
+    /**
+     * @notice Get the number of tokens held by the `account`
+     * @param account The address of the account to get the balance of
+     * @return The number of tokens held
+     */
+    function balanceOf(address account) public view returns (uint) {
+        return checkpoints[account][checkpoints[account].length-1].balance;
+    }
+
     function _delegate(address delegator, address delegatee) internal {
         address currentDelegate = delegates[delegator];
-        uint96 delegatorBalance = balances[delegator];
+        uint256 delegatorBalance = balanceOf(delegator);
         delegates[delegator] = delegatee;
 
         emit DelegateChanged(delegator, currentDelegate, delegatee);
 
-        _moveDelegates(currentDelegate, delegatee, delegatorBalance);
+        _moveDelegates(currentDelegate, delegatee, safe96(delegatorBalance, "overflow"));
     }
 
     function _transferTokens(address src, address dst, uint96 amount) internal {
         require(src != address(0), "Uni::_transferTokens: cannot transfer from the zero address");
         require(dst != address(0), "Uni::_transferTokens: cannot transfer to the zero address");
 
-        balances[src] = sub96(balances[src], amount, "Uni::_transferTokens: transfer amount exceeds balance");
-        balances[dst] = add96(balances[dst], amount, "Uni::_transferTokens: transfer amount overflows");
-        emit Transfer(src, dst, amount);
+        // balances[src] = sub96(balances[src], amount, "Uni::_transferTokens: transfer amount exceeds balance");
+        // balances[dst] = add96(balances[dst], amount, "Uni::_transferTokens: transfer amount overflows");
+        // emit Transfer(src, dst, amount);
+
+        checkpoints[src][checkpoints[src].length-1].balance = sub96(safe96(balanceOf(src),"overflow"), amount, "Uni::_transferTokens: transfer amount exceeds balance");
+
+        if (checkpoints[dst].length > 0) {
+            checkpoints[dst][checkpoints[dst].length-1].balance = add96(safe96(balanceOf(dst),"overflow"), amount, "Uni::_transferTokens: transfer amount overflows");
+        }
 
         _moveDelegates(delegates[src], delegates[dst], amount);
     }
@@ -338,14 +347,14 @@ contract Uni {
     function _moveDelegates(address srcRep, address dstRep, uint96 amount) internal {
         if (srcRep != dstRep && amount > 0) {
             if (srcRep != address(0)) {
-                uint32 srcRepNum = numCheckpoints[srcRep];
+                uint srcRepNum = checkpoints[srcRep].length;
                 uint96 srcRepOld = srcRepNum > 0 ? checkpoints[srcRep][srcRepNum - 1].votes : 0;
                 uint96 srcRepNew = sub96(srcRepOld, amount, "Uni::_moveVotes: vote amount underflows");
                 _writeCheckpoint(srcRep, srcRepNum, srcRepOld, srcRepNew);
             }
 
             if (dstRep != address(0)) {
-                uint32 dstRepNum = numCheckpoints[dstRep];
+                uint dstRepNum = checkpoints[dstRep].length;
                 uint96 dstRepOld = dstRepNum > 0 ? checkpoints[dstRep][dstRepNum - 1].votes : 0;
                 uint96 dstRepNew = add96(dstRepOld, amount, "Uni::_moveVotes: vote amount overflows");
                 _writeCheckpoint(dstRep, dstRepNum, dstRepOld, dstRepNew);
@@ -353,14 +362,13 @@ contract Uni {
         }
     }
 
-    function _writeCheckpoint(address delegatee, uint32 nCheckpoints, uint96 oldVotes, uint96 newVotes) internal {
+    function _writeCheckpoint(address delegatee, uint nCheckpoints, uint96 oldVotes, uint96 newVotes) internal {
       uint32 blockNumber = safe32(block.number, "Uni::_writeCheckpoint: block number exceeds 32 bits");
 
       if (nCheckpoints > 0 && checkpoints[delegatee][nCheckpoints - 1].fromBlock == blockNumber) {
           checkpoints[delegatee][nCheckpoints - 1].votes = newVotes;
       } else {
-          checkpoints[delegatee][nCheckpoints] = Checkpoint(blockNumber, newVotes);
-          numCheckpoints[delegatee] = nCheckpoints + 1;
+          checkpoints[delegatee].push(Checkpoint(blockNumber, newVotes, newVotes));
       }
 
       emit DelegateVotesChanged(delegatee, oldVotes, newVotes);
