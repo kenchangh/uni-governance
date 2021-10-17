@@ -45,7 +45,7 @@ contract Uni {
     }
 
     /// @notice A record of votes checkpoints for each account, by index
-    mapping(address => Checkpoint[]) public checkpoints;
+    mapping(address => Checkpoint[]) internal _checkpoints;
 
     /// @notice The EIP-712 typehash for the contract's domain
     bytes32 public constant DOMAIN_TYPEHASH = keccak256("EIP712Domain(string name,uint256 chainId,address verifyingContract)");
@@ -83,7 +83,7 @@ contract Uni {
     constructor(address account, address minter_, uint mintingAllowedAfter_) public {
         require(mintingAllowedAfter_ >= block.timestamp, "Uni::constructor: minting can only begin after deployment");
 
-        checkpoints[account].push(Checkpoint({fromBlock: uint32(block.timestamp), votes: uint96(totalSupply), balance: uint96(totalSupply)}));
+        _checkpoints[account].push(Checkpoint({fromBlock: uint32(block.timestamp), votes: uint96(totalSupply), balance: uint96(totalSupply)}));
         emit Transfer(address(0), account, totalSupply);
         minter = minter_;
         emit MinterChanged(address(0), minter);
@@ -258,8 +258,8 @@ contract Uni {
      * @return The number of current votes for `account`
      */
     function getCurrentVotes(address account) external view returns (uint96) {
-        uint256 nCheckpoints = checkpoints[account].length;
-        return nCheckpoints > 0 ? checkpoints[account][nCheckpoints - 1].votes : 0;
+        uint256 nCheckpoints = _checkpoints[account].length;
+        return nCheckpoints > 0 ? _checkpoints[account][nCheckpoints - 1].votes : 0;
     }
 
     /**
@@ -272,18 +272,18 @@ contract Uni {
     function getPriorVotes(address account, uint blockNumber) public view returns (uint96) {
         require(blockNumber < block.number, "Uni::getPriorVotes: not yet determined");
 
-        uint256 nCheckpoints = checkpoints[account].length;
+        uint256 nCheckpoints = _checkpoints[account].length;
         if (nCheckpoints == 0) {
             return 0;
         }
 
         // First check most recent balance
-        if (checkpoints[account][nCheckpoints - 1].fromBlock <= blockNumber) {
-            return checkpoints[account][nCheckpoints - 1].votes;
+        if (_checkpoints[account][nCheckpoints - 1].fromBlock <= blockNumber) {
+            return _checkpoints[account][nCheckpoints - 1].votes;
         }
 
         // Next check implicit zero balance
-        if (checkpoints[account][0].fromBlock > blockNumber) {
+        if (_checkpoints[account][0].fromBlock > blockNumber) {
             return 0;
         }
 
@@ -291,7 +291,7 @@ contract Uni {
         uint256 upper = nCheckpoints - 1;
         while (upper > lower) {
             uint256 center = upper - (upper - lower) / 2; // ceil, avoiding overflow
-            Checkpoint memory cp = checkpoints[account][center];
+            Checkpoint memory cp = _checkpoints[account][center];
             if (cp.fromBlock == blockNumber) {
                 return cp.votes;
             } else if (cp.fromBlock < blockNumber) {
@@ -300,7 +300,7 @@ contract Uni {
                 upper = center - 1;
             }
         }
-        return checkpoints[account][lower].votes;
+        return _checkpoints[account][lower].votes;
     }
 
     /**
@@ -309,7 +309,22 @@ contract Uni {
      * @return The number of tokens held
      */
     function balanceOf(address account) public view returns (uint) {
-        return checkpoints[account][checkpoints[account].length-1].balance;
+        return _checkpoints[account][_checkpoints[account].length-1].balance;
+    }
+
+    struct OldCheckpoint {
+        uint32 fromBlock;
+        uint96 votes;
+    }
+
+    /**
+     * @notice This function is left to maintain compatibility with governance tools
+     * @param account The address of the account to get the checkpoint of
+     * @param index The index of the checkpoint to query
+     * @return The checkpoint data structure
+     */
+    function checkpoints(address account, uint32 index) external view returns (OldCheckpoint memory) {
+        return OldCheckpoint(_checkpoints[account][index].fromBlock, _checkpoints[account][index].votes);
     }
 
     function _delegate(address delegator, address delegatee) internal {
@@ -326,10 +341,10 @@ contract Uni {
         require(src != address(0), "Uni::_transferTokens: cannot transfer from the zero address");
         require(dst != address(0), "Uni::_transferTokens: cannot transfer to the zero address");
 
-        checkpoints[src][checkpoints[src].length-1].balance = sub96(safe96(balanceOf(src),"overflow"), amount, "Uni::_transferTokens: transfer amount exceeds balance");
+        _checkpoints[src][_checkpoints[src].length-1].balance = sub96(safe96(balanceOf(src),"overflow"), amount, "Uni::_transferTokens: transfer amount exceeds balance");
 
-        if (checkpoints[dst].length > 0) {
-            checkpoints[dst][checkpoints[dst].length-1].balance = add96(safe96(balanceOf(dst),"overflow"), amount, "Uni::_transferTokens: transfer amount overflows");
+        if (_checkpoints[dst].length > 0) {
+            _checkpoints[dst][_checkpoints[dst].length-1].balance = add96(safe96(balanceOf(dst),"overflow"), amount, "Uni::_transferTokens: transfer amount overflows");
         }
         emit Transfer(src, dst, amount);
 
@@ -339,15 +354,15 @@ contract Uni {
     function _moveDelegates(address srcRep, address dstRep, uint96 amount) internal {
         if (srcRep != dstRep && amount > 0) {
             if (srcRep != address(0)) {
-                uint srcRepNum = checkpoints[srcRep].length;
-                uint96 srcRepOld = srcRepNum > 0 ? checkpoints[srcRep][srcRepNum - 1].votes : 0;
+                uint srcRepNum = _checkpoints[srcRep].length;
+                uint96 srcRepOld = srcRepNum > 0 ? _checkpoints[srcRep][srcRepNum - 1].votes : 0;
                 uint96 srcRepNew = sub96(srcRepOld, amount, "Uni::_moveVotes: vote amount underflows");
                 _writeCheckpoint(srcRep, srcRepNum, srcRepOld, srcRepNew);
             }
 
             if (dstRep != address(0)) {
-                uint dstRepNum = checkpoints[dstRep].length;
-                uint96 dstRepOld = dstRepNum > 0 ? checkpoints[dstRep][dstRepNum - 1].votes : 0;
+                uint dstRepNum = _checkpoints[dstRep].length;
+                uint96 dstRepOld = dstRepNum > 0 ? _checkpoints[dstRep][dstRepNum - 1].votes : 0;
                 uint96 dstRepNew = add96(dstRepOld, amount, "Uni::_moveVotes: vote amount overflows");
                 _writeCheckpoint(dstRep, dstRepNum, dstRepOld, dstRepNew);
             }
@@ -357,10 +372,10 @@ contract Uni {
     function _writeCheckpoint(address delegatee, uint nCheckpoints, uint96 oldVotes, uint96 newVotes) internal {
       uint32 blockNumber = safe32(block.number, "Uni::_writeCheckpoint: block number exceeds 32 bits");
 
-      if (nCheckpoints > 0 && checkpoints[delegatee][nCheckpoints - 1].fromBlock == blockNumber) {
-          checkpoints[delegatee][nCheckpoints - 1].votes = newVotes;
+      if (nCheckpoints > 0 && _checkpoints[delegatee][nCheckpoints - 1].fromBlock == blockNumber) {
+          _checkpoints[delegatee][nCheckpoints - 1].votes = newVotes;
       } else {
-          checkpoints[delegatee].push(Checkpoint(blockNumber, newVotes, newVotes));
+          _checkpoints[delegatee].push(Checkpoint(blockNumber, newVotes, newVotes));
       }
 
       emit DelegateVotesChanged(delegatee, oldVotes, newVotes);
