@@ -31,9 +31,6 @@ contract Uni {
     /// @notice Allowance amounts on behalf of others
     mapping (address => mapping (address => uint96)) internal allowances;
 
-    /// @notice Official record of token balances for each account
-    // mapping (address => uint96) internal balances;
-
     /// @notice A record of each accounts delegate
     mapping (address => address) public delegates;
 
