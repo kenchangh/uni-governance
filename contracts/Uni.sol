@@ -37,7 +37,7 @@ contract Uni {
     /// @notice A record of each accounts delegate
     mapping (address => address) public delegates;
 
-    /// @notice A checkpoint for marking number of votes from a given block
+    /// @notice A checkpoint for marking number of votes and balances from a given block
     struct Checkpoint {
         uint32 fromBlock;
         uint96 votes;
@@ -46,9 +46,6 @@ contract Uni {
 
     /// @notice A record of votes checkpoints for each account, by index
     mapping(address => Checkpoint[]) public checkpoints;
-
-    /// @notice The number of checkpoints for each account
-    // mapping (address => uint32) public numCheckpoints;
 
     /// @notice The EIP-712 typehash for the contract's domain
     bytes32 public constant DOMAIN_TYPEHASH = keccak256("EIP712Domain(string name,uint256 chainId,address verifyingContract)");
@@ -122,8 +119,6 @@ contract Uni {
         totalSupply = safe96(SafeMath.add(totalSupply, amount), "Uni::mint: totalSupply exceeds 96 bits");
 
         // transfer the amount to the recipient
-        // balances[dst] = add96(balances[dst], amount, "Uni::mint: transfer amount overflows");
-        // _writeCheckpoint(delegatee, nCheckpoints, oldVotes, newVotes);
         emit Transfer(address(0), dst, amount);
 
         // move delegates
@@ -331,15 +326,12 @@ contract Uni {
         require(src != address(0), "Uni::_transferTokens: cannot transfer from the zero address");
         require(dst != address(0), "Uni::_transferTokens: cannot transfer to the zero address");
 
-        // balances[src] = sub96(balances[src], amount, "Uni::_transferTokens: transfer amount exceeds balance");
-        // balances[dst] = add96(balances[dst], amount, "Uni::_transferTokens: transfer amount overflows");
-        // emit Transfer(src, dst, amount);
-
         checkpoints[src][checkpoints[src].length-1].balance = sub96(safe96(balanceOf(src),"overflow"), amount, "Uni::_transferTokens: transfer amount exceeds balance");
 
         if (checkpoints[dst].length > 0) {
             checkpoints[dst][checkpoints[dst].length-1].balance = add96(safe96(balanceOf(dst),"overflow"), amount, "Uni::_transferTokens: transfer amount overflows");
         }
+        emit Transfer(src, dst, amount);
 
         _moveDelegates(delegates[src], delegates[dst], amount);
     }
